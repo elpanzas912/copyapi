@@ -1,0 +1,157 @@
+{
+  "proyecto": {
+    "nombre": "YouTube Copy Detection API",
+    "idea": "API que detecta si un video tiene copyright (claims de Content ID) usando el sistema de copy REAL de YouTube, no alternativas de fingerprinting propias.",
+    "enfoque": "Canal canario: subir el video como PRIVADO a un canal dedicado, dejar que Content ID lo escanee, leer el resultado y borrar el video.",
+    "restriccion_clave": "YouTube NO expone una API publica de Content ID. La Content ID API oficial es solo para partners que administran sus propios assets. Por eso el unico camino es hacer que YouTube mismo escanee el contenido subiendolo.",
+    "idioma_preferido": "español"
+  },
+  "arquitectura_propuesta": {
+    "flujo": [
+      "POST /check -> acepta video/audio, devuelve job_id",
+      "Worker sube el video PRIVADO al canal canario via YouTube Data API v3 (resumable upload)",
+      "Worker hace polling del resultado de verificaciones via youtubei (upload/feedback o get_creator_videos)",
+      "Al obtener resultado -> borra el video -> guarda reporte y notifica via webhook",
+      "GET /check/{job_id} -> consulta estado del job"
+    ],
+    "camino_elegido": "Data API para subir + endpoints internos de youtubei (Studio) para leer claims. 100% automatizable, sin navegador.",
+    "fallback": "Playwright/Puppeteer reproduciendo el paso 'Verificaciones' del asistente de subida, si youtubei cambia.",
+    "optimizacion": "Si solo interesa copy de audio, subir el audio con imagen estatica (Content ID matchea igual y pesa menos).",
+    "tipo_de_api": "Asincronica (job + polling/webhook) porque el escaneo tarda minutos."
+  },
+  "hallazgos_del_har": {
+    "archivo": "C:\\Users\\Julian\\Downloads\\studio.youtube.com.har",
+    "total_requests_capturadas": 77,
+    "endpoints_youtubei_encontrados": [
+      {
+        "endpoint": "POST /youtubei/v1/upload/feedback",
+        "descripcion": "Polling en vivo de las Verificaciones de subida. Se llama cada ~2s con un token de continuation.",
+        "llamadas_en_har": 64,
+        "como_funciona": "La primera request va con el continuation inicial de la sesion de subida; cada respuesta devuelve un continuation nuevo (uploadFeedbackRefreshContinuation / timedContinuationData) que se usa en la siguiente llamada.",
+        "campos_utiles": {
+          "estado_copy": "continuationContents[].uploadFeedbackItemContinuation.contents[].uploadChecksRenderer.checksDataVideoNotMonetized.copyrightCheck.checkStatus",
+          "resumen_verificaciones": "uploadChecksRenderer.checksDataVideoNotMonetized.checksSummary.status",
+          "procesamiento": "contents[].processingProgressBar (fractionCompleted, progressMessage)",
+          "video_id": "uploadFeedbackItemContinuation.id.videoId",
+          "estado_subida": "contents[].uploadStatus.uploadStatus (ej: SUCCESS)"
+        },
+        "enums_vistos": {
+          "copyright_check_status": [
+            "UPLOAD_CHECKS_DATA_COPYRIGHT_STATUS_NOT_STARTED",
+            "UPLOAD_CHECKS_DATA_COPYRIGHT_STATUS_COMPLETED"
+          ],
+          "summary_status": [
+            "UPLOAD_CHECKS_DATA_SUMMARY_STATUS_NOT_STARTED",
+            "UPLOAD_CHECKS_DATA_SUMMARY_STATUS_COMPLETED"
+          ],
+          "ad_suitability": ["UPLOAD_CHECKS_DATA_AD_SUITABILITY_STATUS_CHANNEL_NOT_MONETIZED"]
+        },
+        "timing_observado": "El chequeo de copyright tardo ~2 minutos 20 segundos desde NOT_STARTED hasta COMPLETED (video de prueba corto)."
+      },
+      {
+        "endpoint": "POST /youtubei/v1/creator/get_creator_videos",
+        "descripcion": "Consulta el estado de videos por ID (NO depende del polling en vivo). El diamante del HAR.",
+        "llamadas_en_har": 1,
+        "request_body": {
+          "videoIds": ["<videoId>"],
+          "failOnError": true,
+          "mask": {
+            "nota": "El mask pide explicitamente que campos devolver. Los relevantes:",
+            "campos_relevantes": [
+              "claimDetails",
+              "copyrightSummary (viene implicito con el mask usado)",
+              "status",
+              "statusDetails",
+              "allRestrictions",
+              "visibility",
+              "monetization",
+              "videoPrechecks"
+            ]
+          },
+          "context": "mismo context que upload/feedback (ver auth)"
+        },
+        "response_campos_clave": {
+          "tiene_claim_terceros": "videos[].claimDetails.videoHasThirdPartyClaim (booleano directo)",
+          "bloqueo_comercial": "videos[].claimDetails.videoHasCommercialBlock (booleano)",
+          "resumen_copyright": "videos[].copyrightSummary.videoCopyrightSummaryStatus",
+          "impacto_en_canal": "videos[].copyrightSummary.channelImpacts[]",
+          "impacto_visibilidad": "videos[].copyrightSummary.videoVisibilityImpacts[]"
+        },
+        "enums_vistos": {
+          "video_copyright_summary_status": ["VIDEO_COPYRIGHT_SUMMARY_STATUS_NO_CLAIMS_FOUND"],
+          "channel_impacts": ["VIDEO_COPYRIGHT_CHANNEL_IMPACT_NO_CHANNEL_IMPACT"]
+        },
+        "ventaja": "Permite consultar el resultado de copyright de un video por ID en cualquier momento posterior a la subida, con una sola llamada."
+      },
+      {
+        "endpoint": "POST /youtubei/v1/video_manager/metadata_update",
+        "descripcion": "Actualizacion de metadata (usado en la captura, no critico para nuestro flujo).",
+        "llamadas_en_har": 1
+      },
+      {
+        "endpoint": "POST /youtubei/v1/creator/list_creator_playlists",
+        "descripcion": "Listado de playlists del canal (irrelevante para el flujo).",
+        "llamadas_en_har": 1
+      },
+      {
+        "endpoint": "POST /youtubei/v1/creator/get_creator_google_hats_trigger_ids",
+        "descripcion": "Telemetria de surveys de Google (irrelevante).",
+        "llamadas_en_har": 2
+      },
+      {
+        "endpoint": "POST /youtubei/v1/log_event",
+        "descripcion": "Logging de eventos del frontend (irrelevante).",
+        "llamadas_en_har": 1
+      }
+    ],
+    "auth_y_contexto": {
+      "url_base": "https://studio.youtube.com/youtubei/v1/<metodo>?alt=json",
+      "metodo": "POST",
+      "autenticacion": "Cookies de sesion de YouTube Studio + header Authorization: SAPISIDHASH (hash SHA-1 derivado de la cookie SAPISID/__Secure-3PAPISID, origin y timestamp).",
+      "context_client": {
+        "clientName": 62,
+        "clientName_significado": "WEB_CREATOR (YouTube Studio)",
+        "clientVersion": "1.20260815.00.01",
+        "hl": "en",
+        "gl": "AR"
+      },
+      "context_user": {
+        "delegationContext.externalChannelId": "UCEu28kTabzqWjL32TmH2POQ (canal de la captura)",
+        "roleType": "CREATOR_CHANNEL_ROLE_TYPE_OWNER"
+      },
+      "tokens_del_body": {
+        "eats": "Token en context.request.eats - probablemente opcional",
+        "sessionInfo.token": "Token de sesion - probablemente opcional",
+        "consistencyTokenJars": "Jar con expiracion de 600s - probablemente opcional",
+        "nota": "A verificar experimentalmente si las llamadas funcionan solo con cookies + SAPISIDHASH sin estos tokens."
+      },
+      "gestion_de_sesion": "Login manual una vez -> exportar cookies -> reutilizarlas. Refrescar cuando expiren."
+    },
+    "flujo_completo_capturado": {
+      "video_id_ejemplo": "PjXas461Aws",
+      "pasos": [
+        "Subida del video (via Studio web)",
+        "Polling de upload/feedback cada ~2s (64 llamadas)",
+        "Procesamiento llega a 100% (processingProgressBar.fractionCompleted = 1)",
+        "uploadStatus = SUCCESS ('Ready to watch')",
+        "copyrightCheck pasa de NOT_STARTED a COMPLETED (~2m20s)",
+        "Consulta final via get_creator_videos -> videoHasThirdPartyClaim: false, videoCopyrightSummaryStatus: NO_CLAIMS_FOUND"
+      ]
+    }
+  },
+  "limitaciones_y_riesgos": {
+    "quota_data_api": "Una subida via Data API v3 cuesta 1600 unidades; con el default de 10000/dia son ~6 checks por dia. Necesita extension de quota o rotacion de canales/proyectos.",
+    "tos": "Scrapear Studio y subir/borrar en loop viola los ToS de YouTube. Riesgo de ban del canal canario.",
+    "api_no_documentada": "youtubei no tiene contrato estable: los endpoints, campos y enums pueden cambiar sin aviso. Mantener el parser tolerante y monitorear.",
+    "tokens_de_continuacion": "Los continuations de upload/feedback estan atados a la sesion de subida; para leerlos despues conviene get_creator_videos.",
+    "estructura_del_claim_desconocida": "El video de prueba salio limpio. TODAVIA NO VIMOS la forma exacta del payload cuando SI hay un claim (cancion matcheada, reclamante, politica, timestamps)."
+  },
+  "proximos_pasos": [
+    "Capturar un segundo HAR subiendo un video con contenido CON copyright conocido (ej: fragmento de un hit musical) para ver la estructura completa del claim.",
+    "Probar si get_creator_videos funciona con solo cookies + SAPISIDHASH (sin eats/sessionInfo).",
+    "Definir stack de la API (Node/Express o similar) y modelo de datos del job.",
+    "Implementar subida via Data API v3 con visibilidad PRIVATE.",
+    "Implementar lector de resultado via get_creator_videos con reintentos.",
+    "Implementar borrado del video canario y reporte final."
+  ]
+}

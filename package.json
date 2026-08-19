@@ -1,0 +1,17 @@
+{
+  "name": "yt-copy-detection-api",
+  "version": "0.1.0",
+  "description": "API asincrónica que detecta claims de Content ID subiendo videos a un canal canario privado, leyendo el resultado vía youtubei y borrándolos.",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}
