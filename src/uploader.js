@@ -17,7 +17,7 @@
 //    -> response: { videoId: "..." }
 import crypto from "node:crypto";
 
-const UPLOAD_INIT_URL = "https://upload.youtube.com/upload/studio?authuser=0";
+const UPLOAD_INIT_URL = "https://upload.youtube.com/upload/studio?authuser=1";
 
 export class StudioUploader {
   constructor({ cookie, clientVersion, userAgent }) {
@@ -110,7 +110,7 @@ export class StudioUploader {
           origin: "https://studio.youtube.com",
           referer: "https://studio.youtube.com/",
           "user-agent": this.userAgent,
-          "x-goog-authuser": "0",
+          "x-goog-authuser": "1",
           "x-origin": "https://studio.youtube.com",
           "x-youtube-client-name": "62",
           "x-youtube-client-version": this.clientVersion,

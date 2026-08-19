@@ -54,7 +54,7 @@ export class StudioClient {
         cookie: this.cookie,
         "user-agent":
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
-        "x-goog-authuser": "0",
+        "x-goog-authuser": "1",
         "x-origin": STUDIO_ORIGIN,
         "x-youtube-client-name": "62",
         "x-youtube-client-version": this.clientVersion,
@@ -176,12 +176,11 @@ export class StudioClient {
     }));
   }
 
-  // Borrar video del canal (endpoint interno de Studio).
+  // Borrar video del canal (endpoint interno de Studio, confirmado en HAR: youtubei/v1/video/delete).
   async deleteVideo(videoId) {
-    await this.#call("video_manager/delete_video", {
+    await this.#call("video/delete", {
       context: this.#context(),
       videoId,
-      deleteAllLocalizations: true,
     });
     return true;
   }
