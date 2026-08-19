@@ -9,14 +9,7 @@ export const config = {
   port: Number(process.env.PORT || 3000),
   apiKey: process.env.API_KEY || "", // auth de la propia API
 
-  // Canal canario (YouTube Data API v3, OAuth refresh token)
-  google: {
-    clientId: required("GOOGLE_CLIENT_ID"),
-    clientSecret: required("GOOGLE_CLIENT_SECRET"),
-    refreshToken: required("GOOGLE_REFRESH_TOKEN"),
-  },
-
-  // Sesión de YouTube Studio (cookies exportadas)
+  // Sesión de YouTube Studio (cookies exportadas) - unica credencial necesaria
   studio: {
     // Cookie header completo, ej: "SID=...; HSID=...; SSID=...; SAPISID=...; __Secure-3PAPISID=..."
     cookie: required("STUDIO_COOKIE"),

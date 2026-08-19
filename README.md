@@ -2,7 +2,9 @@
 
 API asincrónica que detecta si un video tiene claims de Content ID usando el sistema real de YouTube.
 
-**Cómo funciona:** sube el video como PRIVADO a un canal canario vía YouTube Data API v3, espera el escaneo de Content ID (~2-3 min), lee el resultado vía los endpoints internos de YouTube Studio (youtubei), borra el video y devuelve el reporte.
+**Cómo funciona:** sube el video como PRIVADO al canal canario replicando el flujo nativo de YouTube Studio (upload.youtube.com + youtubei `upload/createvideo`), espera el escaneo de Content ID (~2-3 min), lee el resultado vía los endpoints internos de Studio (youtubei), borra el video y devuelve el reporte.
+
+**Sin OAuth ni quota de Data API:** todo funciona con las cookies de una sesión de YouTube Studio. Sin límite de 6 checks/día.
 
 ## Endpoints
 
@@ -17,8 +19,7 @@ API asincrónica que detecta si un video tiene claims de Content ID usando el si
 
 | Variable | Descripción |
 |---|---|
-| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_REFRESH_TOKEN` | OAuth del proyecto Google con YouTube Data API v3 habilitada |
-| `STUDIO_COOKIE` | Cookies de sesión de YouTube Studio (header completo) |
+| `STUDIO_COOKIE` | Cookies de sesión de YouTube Studio (header completo). Única credencial requerida |
 | `STUDIO_CHANNEL_ID` | ID del canal canario (UC...) |
 | `API_KEY` | API key para autenticar esta API (opcional) |
 | `STUDIO_POLL_MS` | Intervalo de polling (default 10000) |

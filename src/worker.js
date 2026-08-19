@@ -1,13 +1,13 @@
 // Worker: procesa jobs de la cola.
-// Flujo: subir privado -> polling get_creator_videos hasta copyright COMPLETED
+// Flujo: subir privado (Studio) -> polling get_creator_videos hasta copyright COMPLETED
 //        -> (si hay claims) list_creator_received_claims + matches -> borrar -> reporte
 import fs from "node:fs";
 import { config } from "./config.js";
-import { YouTubeUploader } from "./uploader.js";
+import { StudioUploader } from "./uploader.js";
 import { StudioClient } from "./studio-client.js";
 import { getJob, updateJob } from "./store.js";
 
-const uploader = new YouTubeUploader(config.google);
+const uploader = new StudioUploader(config.studio);
 const studio = new StudioClient(config.studio);
 
 export async function processJob(jobId) {
@@ -20,11 +20,10 @@ export async function processJob(jobId) {
   );
 
   try {
-    // 1) Subida privada
+    // 1) Subida privada via flujo de Studio
     updateJob(jobId, { status: "uploading" });
     const videoId = await uploader.uploadPrivateVideo({
       filePath: job.input.filepath,
-      fileSize: job.input.sizeBytes,
       title: `check ${job.id.slice(0, 8)}`,
     });
     updateJob(jobId, { videoId, status: "checking" });
@@ -52,7 +51,7 @@ export async function processJob(jobId) {
     const vid = current?.videoId;
     if (vid && config.worker.alwaysDeleteVideo) {
       try {
-        await uploader.deleteVideo(vid);
+        await studio.deleteVideo(vid);
       } catch (err) {
         console.error(`[job ${jobId}] fallo el borrado del video ${vid}:`, err.message);
       }

@@ -176,6 +176,16 @@ export class StudioClient {
     }));
   }
 
+  // Borrar video del canal (endpoint interno de Studio).
+  async deleteVideo(videoId) {
+    await this.#call("video_manager/delete_video", {
+      context: this.#context(),
+      videoId,
+      deleteAllLocalizations: true,
+    });
+    return true;
+  }
+
   #territories(territories) {
     if (!territories?.entries) return null;
     const included = territories.entries.filter((e) => e.included).map((e) => e.territory);

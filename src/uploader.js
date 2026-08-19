@@ -1,150 +1,154 @@
-// Subida de videos al canal canario via YouTube Data API v3 (resumable upload).
-// OAuth2 con refresh token -> access token.
-const TOKEN_URL = "https://oauth2.googleapis.com/token";
-const UPLOAD_URL = "https://www.googleapis.com/upload/youtube/v3/videos";
-const VIDEOS_URL = "https://www.googleapis.com/youtube/v3/videos";
+// Subida de videos al canal canario replicando el flujo nativo de YouTube Studio.
+// Auth: mismas cookies de Studio. Sin OAuth, sin quota de Data API.
+//
+// Flujo (extraido del HAR):
+// 1) POST https://upload.youtube.com/upload/studio?authuser=0
+//    body: {"frontendUploadId":"innertube_studio:<uuid>:0"}
+//    -> headers de respuesta: x-goog-upload-url (sesion resumable)
+//
+// 2) PUT/POST a x-goog-upload-url con headers:
+//    x-goog-upload-command: upload, finalize
+//    x-goog-upload-file-name: <filename urlencoded>
+//    x-goog-upload-offset: 0
+//    body: bytes del video
+//    -> response JSON: { status: "STATUS_SUCCESS", scottyResourceId: "..." }
+//
+// 3) POST youtubei/v1/upload/createvideo con el scottyResourceId
+//    -> response: { videoId: "..." }
+import crypto from "node:crypto";
 
-export class YouTubeUploader {
-  constructor({ clientId, clientSecret, refreshToken }) {
-    this.clientId = clientId;
-    this.clientSecret = clientSecret;
-    this.refreshToken = refreshToken;
-    this.accessToken = null;
-    this.tokenExpiresAt = 0;
+const UPLOAD_INIT_URL = "https://upload.youtube.com/upload/studio?authuser=0";
+
+export class StudioUploader {
+  constructor({ cookie, clientVersion, userAgent }) {
+    this.cookie = cookie;
+    this.clientVersion = clientVersion || "1.20260815.00.01";
+    this.userAgent =
+      userAgent ||
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36";
   }
 
-  async #getAccessToken() {
-    if (this.accessToken && Date.now() < this.tokenExpiresAt - 60000) {
-      return this.accessToken;
-    }
-    const res = await fetch(TOKEN_URL, {
+  #sapisidHash() {
+    const m =
+      this.cookie.match(/SAPISID=([^;]+)/) ||
+      this.cookie.match(/__Secure-3PAPISID=([^;]+)/);
+    if (!m) throw new Error("Cookie sin SAPISID/__Secure-3PAPISID");
+    const sapisid = m[1].trim();
+    const ts = Math.floor(Date.now() / 1000);
+    const origin = "https://studio.youtube.com";
+    const sha1 = crypto
+      .createHash("sha1")
+      .update(`${ts} ${sapisid}`)
+      .update(`${origin} ${sapisid}`)
+      .digest("hex");
+    return `SAPISIDHASH ${ts}_${sha1}`;
+  }
+
+  async uploadPrivateVideo({ filePath, title = "copy check" }) {
+    const { readFile } = await import("node:fs/promises");
+    const videoBuffer = await readFile(filePath);
+    const frontendUploadId = `innertube_studio:${crypto.randomUUID().toUpperCase()}:0`;
+
+    // 1) Init de sesion resumable
+    const initRes = await fetch(UPLOAD_INIT_URL, {
       method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        client_id: this.clientId,
-        client_secret: this.clientSecret,
-        refresh_token: this.refreshToken,
-        grant_type: "refresh_token",
-      }),
-    });
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      throw new Error(`token HTTP ${res.status}: ${text.slice(0, 300)}`);
-    }
-    const data = await res.json();
-    this.accessToken = data.access_token;
-    this.tokenExpiresAt = Date.now() + (data.expires_in || 3600) * 1000;
-    return this.accessToken;
-  }
-
-  async #apiFetch(url, options = {}) {
-    const token = await this.#getAccessToken();
-    return fetch(url, {
-      ...options,
       headers: {
-        authorization: `Bearer ${token}`,
-        ...options.headers,
+        "content-type": "application/x-www-form-urlencoded;charset=UTF-8",
+        cookie: this.cookie,
+        origin: "https://studio.youtube.com",
+        referer: "https://studio.youtube.com/",
+        "user-agent": this.userAgent,
       },
+      body: JSON.stringify({ frontendUploadId }),
     });
-  }
-
-  // Sube un video PRIVADO con resumable upload. Devuelve el videoId.
-  async uploadPrivateVideo({ filePath, fileSize, title = "copy check" }) {
-    const metadata = {
-      snippet: {
-        title: title.slice(0, 100),
-        description: "canary check",
-        categoryId: "22", // People & Blogs
-      },
-      status: {
-        privacyStatus: "private",
-        selfDeclaredMadeForKids: false,
-      },
-    };
-
-    // 1) Iniciar sesión resumable
-    const initRes = await this.#apiFetch(
-      `${UPLOAD_URL}?uploadType=resumable&part=snippet,status`,
-      {
-        method: "POST",
-        headers: {
-          "content-type": "application/json; charset=UTF-8",
-          "x-upload-content-length": String(fileSize),
-          "x-upload-content-type": "video/mp4",
-        },
-        body: JSON.stringify(metadata),
-      }
-    );
     if (!initRes.ok) {
       const text = await initRes.text().catch(() => "");
-      throw new Error(`upload init HTTP ${initRes.status}: ${text.slice(0, 500)}`);
-    }
-    const sessionUrl = initRes.headers.get("location");
-    if (!sessionUrl) throw new Error("upload init no devolvio location");
-
-    // 2) Subir el archivo en chunks de 8MB con reintentos
-    const CHUNK = 8 * 1024 * 1024;
-    const { createReadStream } = await import("node:fs");
-    const { statSync } = await import("node:fs");
-
-    let offset = 0;
-    let finalRes = null;
-    while (offset < fileSize) {
-      const end = Math.min(offset + CHUNK, fileSize) - 1;
-      const stream = createReadStream(filePath, { start: offset, end });
-      const chunks = [];
-      for await (const c of stream) chunks.push(c);
-      const buf = Buffer.concat(chunks);
-
-      finalRes = await fetch(sessionUrl, {
-        method: "PUT",
-        headers: {
-          "content-length": String(buf.length),
-          "content-range": `bytes ${offset}-${end}/${fileSize}`,
-        },
-        body: buf,
-      });
-
-      if (finalRes.status === 308) {
-        offset = end + 1;
-        continue; // seguir subiendo
-      }
-      if (finalRes.ok) break;
-      // 5xx: consultar progreso y reintentar el rango pendiente
-      if (finalRes.status >= 500) {
-        const statusRes = await fetch(sessionUrl, {
-          method: "PUT",
-          headers: { "content-range": `bytes */${fileSize}` },
-        });
-        const range = statusRes.headers.get("range");
-        if (range) {
-          offset = Number(range.match(/-(\d+)/)?.[1] || 0) + 1;
-          continue;
-        }
-      }
-      const text = await finalRes.text().catch(() => "");
       throw new Error(
-        `upload chunk HTTP ${finalRes.status}: ${text.slice(0, 500)}`
+        `upload init HTTP ${initRes.status}: ${text.slice(0, 300)}`
+      );
+    }
+    const uploadUrl = initRes.headers.get("x-goog-upload-url");
+    if (!uploadUrl) throw new Error("upload init no devolvio x-goog-upload-url");
+
+    // 2) Subir bytes + finalize
+    const fileName =
+      filePath.split(/[\\/]/).pop() || "video.mp4";
+    const upRes = await fetch(uploadUrl, {
+      method: "POST",
+      headers: {
+        cookie: this.cookie,
+        "content-length": String(videoBuffer.length),
+        "x-goog-upload-command": "upload, finalize",
+        "x-goog-upload-file-name": encodeURIComponent(fileName),
+        "x-goog-upload-offset": "0",
+        origin: "https://studio.youtube.com",
+        referer: "https://studio.youtube.com/",
+        "user-agent": this.userAgent,
+      },
+      body: videoBuffer,
+    });
+    if (!upRes.ok) {
+      const text = await upRes.text().catch(() => "");
+      throw new Error(`upload HTTP ${upRes.status}: ${text.slice(0, 300)}`);
+    }
+    const uploadResult = await upRes.json();
+    if (uploadResult.status !== "STATUS_SUCCESS" || !uploadResult.scottyResourceId) {
+      throw new Error(
+        `upload finalize inesperado: ${JSON.stringify(uploadResult).slice(0, 300)}`
       );
     }
 
-    if (!finalRes || !finalRes.ok) {
-      throw new Error(`upload finalizo sin exito: ${finalRes?.status}`);
+    // 3) Crear el video PRIVADO en el canal
+    const createRes = await fetch(
+      "https://studio.youtube.com/youtubei/v1/upload/createvideo?alt=json",
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          cookie: this.cookie,
+          authorization: this.#sapisidHash(),
+          origin: "https://studio.youtube.com",
+          referer: "https://studio.youtube.com/",
+          "user-agent": this.userAgent,
+          "x-goog-authuser": "0",
+          "x-origin": "https://studio.youtube.com",
+          "x-youtube-client-name": "62",
+          "x-youtube-client-version": this.clientVersion,
+        },
+        body: JSON.stringify({
+          resourceId: { scottyResourceId: uploadResult.scottyResourceId },
+          frontendUploadId,
+          initialMetadata: {
+            title: { newTitle: title.slice(0, 100) },
+            privacy: { newPrivacy: "PRIVATE" },
+            draftState: { isDraft: false },
+          },
+          contentLevelProtection: { enableRequiresContentLevelProtection: false },
+          context: {
+            client: {
+              clientName: 62,
+              clientVersion: this.clientVersion,
+              hl: "en",
+              gl: "US",
+            },
+            user: {
+              onBehalfOfUser: "",
+            },
+          },
+        }),
+      }
+    );
+    if (!createRes.ok) {
+      const text = await createRes.text().catch(() => "");
+      throw new Error(`createvideo HTTP ${createRes.status}: ${text.slice(0, 300)}`);
     }
-    const video = await finalRes.json();
-    return video.id;
-  }
-
-  // Borrar el video canario.
-  async deleteVideo(videoId) {
-    const res = await this.#apiFetch(`${VIDEOS_URL}?id=${videoId}`, {
-      method: "DELETE",
-    });
-    // 204 = ok, 404 = ya no existe (ok para nosotros)
-    if (!res.ok && res.status !== 404) {
-      const text = await res.text().catch(() => "");
-      throw new Error(`delete HTTP ${res.status}: ${text.slice(0, 300)}`);
+    const created = await createRes.json();
+    const videoId = created.videoId;
+    if (!videoId) {
+      throw new Error(
+        `createvideo no devolvio videoId: ${JSON.stringify(created).slice(0, 300)}`
+      );
     }
-    return true;
+    return videoId;
   }
 }
